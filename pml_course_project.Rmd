@@ -1,0 +1,154 @@
+---
+output: html_document
+---
+Predicting Weight Lifting Exercise Effectiveness through Human Activity Recognition
+========================================================
+elenapatricia218  
+October 25, 2015
+
+### Objective
+Predict the manner in which participants were performing a weight lifting exercise (classe) based on different types of Human Activity Recognition. Data were collected in order to measure how well participants conduct a particular exercise. See below "References" section for a more thorough context.
+
+### 1. Data Treatment
+Setting up the required packages and identifying a seed make the below reproducible if you should choose to replicate this analysis. Also, splitting the training data into training/testing datasets enables cross-validation before applying purely to the final testing dataset. 
+
+```{r message=FALSE,warning=FALSE,cache=TRUE}
+library(ggplot2); library(lattice); library(caret); library(rpart); library(randomForest)
+set.seed(2564)
+
+# Step 1 - get data for training
+fileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(fileUrl,destfile="./pml-training.csv",method="curl")
+pml.training <- read.csv("./pml-training.csv")
+# within train, subset out a test dset
+inTrain <- createDataPartition(y=pml.training$classe,
+                               p=0.7, list=FALSE)
+training <- pml.training[inTrain,]
+testing <- pml.training[-inTrain,]
+```
+
+The most important step is to clean up the data in order to avoid "Garbage In, Garbage Out." This included scrubbing non-numeric columns, and eliminating any columns which were un-useable (e.g. due to 100% population of NAs, or data which aren't movements). 
+
+```{r cache=TRUE}
+# GIGO - clean up the data!
+# specify numeric variables
+nums <- sapply(training,is.numeric)
+# look at the NA problem
+na_count <-sapply(training, function(y) sum(length(which(is.na(y)))))
+na_count <- data.frame(na_count)
+# ok we need to subset nums
+training.f <- cbind(training[,nums],training$classe)
+colnames(training.f)[124] <- "classe"
+# and drop columns that are all na
+training.f2 <- training.f[,colSums(is.na(training.f))==0]
+# and drop columns which are not movements
+training.f2 <- training.f2[,-c(1,2,3,4)]
+```
+
+### 2. Fitting Models
+<b>2.1 Preliminary fit</b>    
+
+First, a simple tree method approach was taken.
+```{r results='hide',cache=TRUE}
+modFit <- train(classe ~ .,method="rpart",data=training.f2)
+print(modFit$finalModel)
+
+# check out the top two nodes' influence
+qplot(roll_belt,pitch_forearm,colour=classe,data=training)
+```
+
+```{r results='hide',cache=TRUE}
+# look at the tree
+#plot(modFit$finalModel,uniform=TRUE,
+#     main="Classification Tree")
+#text(modFit$finalModel,use.n=TRUE,all=TRUE,cex=.8)
+
+# look at a confusion matrix
+pred <- predict(modFit,newdata=training)
+confusionMatrix(pred,training$classe)
+# yikes, accuracy is only 0.55
+```
+
+```{r cache=TRUE}
+# see how it does on testing
+# this is the cross-validation
+predtest <- predict(modFit,newdata=testing)
+confusionMatrix(predtest,testing$classe) # also 0.55, very stable
+```
+
+
+We can see overall that the tree does carry some level of prediction, and that it does cross-validate on the test dataset. However the accuracy is only 0.55. We can probably do much better because it's clear from the plot that there is not a linear relationship, which makes random forest the next approach we will take.
+
+<b>2.2 Random Forest</b>  
+
+This problem appears best suited to a random forest approach so the data were fit using this method.
+
+```{r results='hide',cache=TRUE}
+# try a random forest
+modFit.rf <- train(classe~ .,
+                data=training.f2,method="rf",
+                trControl=trainControl(method="oob"),
+                importance=TRUE, verbose=TRUE, prox=TRUE)
+modFit.rf
+```
+
+```{r cache=TRUE}
+# sweet accuracy of 0.99
+pred.rf <- predict(modFit.rf,newdata=training)
+
+equalPredictions = (pred.rf==training$classe)
+qplot(roll_belt,pitch_forearm,colour=equalPredictions,data=training)
+# kk
+```
+
+```{r results='hide',cache=TRUE}
+confusionMatrix(pred.rf,training$classe)
+```
+
+We can see from the plot of equal predictions that this method very accurately predicts the classe, at an accuracy rate of 0.99. The trick with Random Forest is that sometimes it overfits, so we will confirm on the out of sample testing/validation dataset that this still holds.
+
+```{r cache=TRUE}
+# try a random forest
+# now for testing
+pred.rftest <- predict(modFit.rf,newdata=testing)
+equalPredictionstest = (pred.rftest==testing$classe)
+qplot(roll_belt,pitch_forearm,colour=equalPredictionstest,data=testing)
+confusionMatrix(pred.rftest,testing$classe)
+# accuracy still 0.99
+```
+
+Importantly, the accuracy rate is still 0.99 and the plot indicates that the equalPredictions hold to a validation sample.
+
+### 3. Application
+
+Finally, we apply these predictions to a completely new "test" dataset to see how the predictions further validate.
+
+```{r, echo=FALSE,cache=TRUE}
+# test dataset for submissions
+fileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(fileUrl,destfile="./pml-testing.csv",method="curl")
+pml.testing <- read.csv("./pml-testing.csv")
+
+finalpred <- predict(modFit.rf,newdata=pml.testing)
+predictions <- as.character(finalpred)
+
+pml_write_files = function(x){
+        n = length(x)
+        for(i in 1:n){
+                filename = paste0("problem_id_",i,".txt")
+                write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+        }
+}
+pml_write_files(predictions)
+
+```
+
+20/20 of the predicted values were correct.
+
+### References
+
+http://groupware.les.inf.puc-rio.br/har
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+Read more: http://groupware.les.inf.puc-rio.br/har#ixzz3paTIccQf
